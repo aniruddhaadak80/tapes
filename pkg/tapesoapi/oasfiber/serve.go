@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 
 	oas "github.com/papercomputeco/tapes/pkg/tapesoapi"
 )
@@ -86,8 +86,8 @@ func (s *Server) YAML() fiber.Handler {
 }
 
 func (s *Server) handler(contentType string, encode func(*oas.CompiledDoc) ([]byte, error)) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		document, err := s.Document(c.UserContext())
+	return func(c fiber.Ctx) error {
+		document, err := s.Document(c.Context())
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error":   "openapi_compile_failed",
