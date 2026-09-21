@@ -35,10 +35,10 @@ jobs:
           echo "Current SHA: ${{ github.sha }}"
 
           if [ "$LAST_SHA" = "${{ github.sha }}" ]; then
-            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
             echo "No new commits since last nightly!"
           else
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -55,6 +55,12 @@ jobs:
 
       - name: Cache Nix store
         uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Record image build time
+        run: echo "IMAGE_BUILDTIME=$(date -u '+%Y-%m-%d %H:%M:%S')" >> "$GITHUB_ENV"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -81,19 +87,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push nightly tapes image
-        run: |
-          nix develop --command dagger call \
-            build-push-tapes-images \
-              --registry=${{ vars.REGISTRY }} \
-              --tags="nightly" \
-              --version="nightly" \
-              --commit="${{ github.sha }}" \
-              --post-hog-public-key="${{ secrets.POSTHOG_API_KEY }}" \
-        env:
-          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+      - name: Build and push nightly tapes image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ vars.REGISTRY }}/tapes:nightly
+          build-args: |
+            VERSION=nightly
+            COMMIT=${{ github.sha }}
+            BUILDTIME=${{ env.IMAGE_BUILDTIME }}
+            POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }}
+          cache-from: type=gha,scope=tapes
+          cache-to: type=gha,mode=max,scope=tapes
+          provenance: false
+          sbom: false
 
-      - name: Push nightly extproc image
+      - name: Validate extproc registry
         run: |
           if [ -z "${{ vars.EXTPROC_REGISTRY }}" ]; then
             echo "EXTPROC_REGISTRY repository variable is not set." >&2
@@ -102,14 +114,23 @@ jobs:
             echo "extproc to REGISTRY, which is ECR Public and hosts tapes." >&2
             exit 1
           fi
-          nix develop --command dagger call \
-            build-push-extproc-images \
-              --registry=${{ vars.EXTPROC_REGISTRY }} \
-              --tags="nightly" \
-              --version="nightly" \
-              --commit="${{ github.sha }}"
-        env:
-          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+
+      - name: Build and push nightly extproc image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.extproc
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ vars.EXTPROC_REGISTRY }}/tapes-extproc:nightly
+          build-args: |
+            VERSION=nightly
+            COMMIT=${{ github.sha }}
+            BUILDTIME=${{ env.IMAGE_BUILDTIME }}
+          cache-from: type=gha,scope=tapes-extproc
+          cache-to: type=gha,mode=max,scope=tapes-extproc
+          provenance: false
+          sbom: false
 
       - name: Build upload nightly release artifacts
         run: |
@@ -156,7 +177,7 @@ jobs:
       - name: Upload artifacts to release
         run: |
           mkdir -p dist
-          for file in $(find build -type f); do
+          while IFS= read -r -d '' file; do
             rel_path="${file#build/}"
             os=$(dirname "$rel_path" | cut -d'/' -f1)
             arch=$(dirname "$rel_path" | cut -d'/' -f2)
@@ -170,7 +191,7 @@ jobs:
             fi
 
             cp "$file" "dist/$new_name"
-          done
+          done < <(find build -type f -print0)
 
           gh release upload "nightly" dist/*
         env:

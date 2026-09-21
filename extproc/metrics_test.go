@@ -255,25 +255,28 @@ var _ = Describe("Extproc metrics", func() {
 		Expect(txt).NotTo(ContainSubstring(`tapes_extproc_request_content_length_bytes_sum`))
 	})
 
-	It("declares utils.Version/utils.Sha for the ldflags contract and renders build_info as 1", func() {
-		// Referencing the package vars directly means compiling this file
-		// proves the utils.Version/utils.Sha ldflags symbols still exist.
-		// Values are not pinned: release builds stamp them via -X.
+	It("declares the build identity variables, stamps them in both images, and renders build_info as 1", func() {
+		// Referencing the package vars directly means compiling this file proves
+		// the linker targets still exist. Values are not pinned: image builds
+		// stamp them via -X.
 		Expect(utils.Version).NotTo(BeEmpty())
 		Expect(utils.Sha).NotTo(BeEmpty())
+		Expect(utils.Buildtime).NotTo(BeEmpty())
 
-		// Lock the other side of the contract: the Dagger build must still
-		// stamp exactly these symbol names, and the extproc image build must
-		// still route through it.
+		// Lock the other side of the contract: both Dockerfiles are image build
+		// sources of truth and must stamp the same three build identity symbols.
 		_, file, _, ok := runtime.Caller(0)
 		Expect(ok).To(BeTrue(), "runtime.Caller failed")
-		build, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", ".dagger", "build.go"))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(string(build)).To(ContainSubstring(`-X 'github.com/papercomputeco/tapes/pkg/utils.Version=`))
-		Expect(string(build)).To(ContainSubstring(`-X 'github.com/papercomputeco/tapes/pkg/utils.Sha=`))
-		img, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", ".dagger", "extproc.go"))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(string(img)).To(ContainSubstring(`releaseLDFlags(`))
+		for _, name := range []string{"Dockerfile", "Dockerfile.extproc"} {
+			dockerfile, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", name))
+			Expect(err).NotTo(HaveOccurred(), name)
+			for _, symbol := range []string{"Version", "Sha", "Buildtime"} {
+				Expect(string(dockerfile)).To(
+					ContainSubstring(`-X 'github.com/papercomputeco/tapes/pkg/utils.`+symbol+`=`),
+					"%s must stamp utils.%s", name, symbol,
+				)
+			}
+		}
 
 		m := NewMetrics()
 		m.SetBuildInfo("v1.2.3", "abc1234")
