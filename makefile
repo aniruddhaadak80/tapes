@@ -15,6 +15,11 @@ IMAGE ?= tapes:dev
 # extproc at REGISTRY produces a push the release role has no permission for.
 EXTPROC_REGISTRY ?= 952121199601.dkr.ecr.us-east-1.amazonaws.com
 EXTPROC_IMAGE ?= tapes-extproc:dev
+CONTAINER_TOOL ?= docker
+PLATFORMS ?= linux/amd64,linux/arm64
+# A repository-scoped container-backed builder gives standard Docker Engine a
+# reusable multi-platform cache without changing the user's selected builder.
+BUILDX_BUILDER ?= tapes-builder
 
 POSTHOG_API_KEY ?=
 POSTHOG_ENDPOINT ?= https://us.i.posthog.com
@@ -78,7 +83,10 @@ install: build-local ## Builds local artifacts and installs to configured $GOPAT
 	install -m 0755 ./build/tapes $(shell go env GOBIN)/tapes
 
 .PHONY: build
-build: ## Builds all cross-platform artifacts - Warning! MacOS may fail cross compiling toolchain dependency
+build: build-local-image build-local-extproc-image ## Builds the local development container images
+
+.PHONY: build-binaries
+build-binaries: ## Builds all cross-platform binary artifacts - Warning! MacOS may fail cross compiling toolchain dependency
 	dagger call \
 		build-release \
 			--version ${VERSION} \
@@ -120,43 +128,55 @@ release: ## Builds and releases tapes artifacts
 			--secret-access-key=env://BUCKET_SECRET_ACCESS_KEY
 
 .PHONY: build-images
-build-images: build-tapes-image build-extproc-image ## Builds all container artifacts
+build-images: build-tapes-image build-extproc-image ## Builds all container artifacts with their established local tags
 
 .PHONY: build-local-image
 build-local-image: ## Build a local Docker image for Kind/clearing (IMAGE=tapes:dev)
 	$(call print-target)
-	dagger call \
-		build-tapes-image \
-			--version=${VERSION} \
-			--commit=${COMMIT} \
-		export-image \
-			--name=${IMAGE}
+	$(CONTAINER_TOOL) build --load \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg BUILDTIME="$(BUILDTIME)" \
+		--build-arg POSTHOG_API_KEY="$(POSTHOG_API_KEY)" \
+		--build-arg POSTHOG_ENDPOINT="$(POSTHOG_ENDPOINT)" \
+		-t "$(IMAGE)" \
+		-f Dockerfile .
 
 .PHONY: build-tapes-image
-build-tapes-image: ## Builds, tags, and loads the tapes container artifact locally
+build-tapes-image: ## Builds, tags, and loads the versioned tapes container artifact locally
 	$(call print-target)
-	dagger call \
-		build-tapes-image \
-			--version=${VERSION} \
-			--commit=${COMMIT} \
-		export-image \
-			--name=${REGISTRY}/tapes:${VERSION}
-	dagger call \
-		build-tapes-image \
-			--version=${VERSION} \
-			--commit=${COMMIT} \
-		export-image \
-			--name=${REGISTRY}/tapes:latest
+	$(CONTAINER_TOOL) build --load \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg BUILDTIME="$(BUILDTIME)" \
+		--build-arg POSTHOG_API_KEY="$(POSTHOG_API_KEY)" \
+		--build-arg POSTHOG_ENDPOINT="$(POSTHOG_ENDPOINT)" \
+		-t "$(REGISTRY)/tapes:$(VERSION)" \
+		-t "$(REGISTRY)/tapes:latest" \
+		-f Dockerfile .
+
+.PHONY: ensure-buildx-builder
+ensure-buildx-builder:
+	@$(CONTAINER_TOOL) buildx inspect "$(BUILDX_BUILDER)" >/dev/null 2>&1 || \
+		($(CONTAINER_TOOL) buildx create --driver docker-container --name "$(BUILDX_BUILDER)" >/dev/null 2>&1 || \
+		 $(CONTAINER_TOOL) buildx inspect "$(BUILDX_BUILDER)" >/dev/null)
 
 .PHONY: build-push-tapes-images
-build-push-tapes-images: ## Builds and publishes the multi-arch tapes container images
-	dagger call \
-		build-push-tapes-images \
-			--registry=${REGISTRY} \
-			--tags=${VERSION} \
-			--tags=latest \
-			--version=${VERSION} \
-			--commit=${COMMIT}
+build-push-tapes-images: ensure-buildx-builder ## Builds and publishes the multi-arch tapes container images
+	$(CONTAINER_TOOL) buildx build \
+		--builder "$(BUILDX_BUILDER)" \
+		--platform "$(PLATFORMS)" \
+		--push \
+		--provenance=false \
+		--sbom=false \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg BUILDTIME="$(BUILDTIME)" \
+		--build-arg POSTHOG_API_KEY="$(POSTHOG_API_KEY)" \
+		--build-arg POSTHOG_ENDPOINT="$(POSTHOG_ENDPOINT)" \
+		-t "$(REGISTRY)/tapes:$(VERSION)" \
+		-t "$(REGISTRY)/tapes:latest" \
+		-f Dockerfile .
 
 .PHONY: up
 up: ## Starts the default, fully containerized Compose stack
@@ -192,39 +212,38 @@ test-extproc: ## Runs the ext_proc adapter's test suite (no services needed)
 	dagger call check-extproc
 
 .PHONY: check-extproc-image
-check-extproc-image: ## Builds the tapes-extproc image without loading it (CI gate)
-	$(call print-target)
-	dagger call \
-		build-extproc-image \
-			--version=${VERSION} \
-			--commit=${COMMIT} \
-		sync
+check-extproc-image: build-extproc-image ## Compatibility alias for building the tapes-extproc image
 
 .PHONY: build-extproc-image
 build-extproc-image: ## Builds and loads the tapes-extproc image locally (EXTPROC_IMAGE=tapes-extproc:dev)
 	$(call print-target)
-	dagger call \
-		build-extproc-image \
-			--version=${VERSION} \
-			--commit=${COMMIT} \
-		export-image \
-			--name=${EXTPROC_IMAGE}
+	$(CONTAINER_TOOL) build --load \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg BUILDTIME="$(BUILDTIME)" \
+		-t "$(EXTPROC_IMAGE)" \
+		-f Dockerfile.extproc .
 
 .PHONY: build-local-extproc-image
-# Cross-repo clearing contract; keep the Dagger invocation owned by
+# Cross-repo clearing contract; keep the image build owned by
 # build-extproc-image.
 build-local-extproc-image: ## Build a local tapes-extproc image for Kind/clearing
 	$(MAKE) build-extproc-image EXTPROC_IMAGE="$(EXTPROC_IMAGE)"
 
 .PHONY: build-push-extproc-images
-build-push-extproc-images: ## Builds and publishes the multi-arch tapes-extproc container images
-	dagger call \
-		build-push-extproc-images \
-			--registry=${EXTPROC_REGISTRY} \
-			--tags=${VERSION} \
-			--tags=latest \
-			--version=${VERSION} \
-			--commit=${COMMIT}
+build-push-extproc-images: ensure-buildx-builder ## Builds and publishes the multi-arch tapes-extproc container images
+	$(CONTAINER_TOOL) buildx build \
+		--builder "$(BUILDX_BUILDER)" \
+		--platform "$(PLATFORMS)" \
+		--push \
+		--provenance=false \
+		--sbom=false \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg BUILDTIME="$(BUILDTIME)" \
+		-t "$(EXTPROC_REGISTRY)/tapes-extproc:$(VERSION)" \
+		-t "$(EXTPROC_REGISTRY)/tapes-extproc:latest" \
+		-f Dockerfile.extproc .
 
 .PHONY: e2e-test
 e2e-test: ## Runs end-to-end tests with Postgres and Ollama via Dagger

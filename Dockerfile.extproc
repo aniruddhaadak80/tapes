@@ -10,7 +10,9 @@
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
-ARG LDFLAGS="-s -w"
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILDTIME=dev
 
 WORKDIR /workspace
 # Copy the Go Modules manifests
@@ -31,7 +33,9 @@ COPY . .
 # module without it is how the sidecar ends up decoding differently from the
 # server it feeds.
 RUN CGO_ENABLED=0 GOEXPERIMENT="jsonv2" GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -a -ldflags="${LDFLAGS}" -o tapes-extproc ./cli/tapes-extproc
+    go build -a \
+    -ldflags="-s -w -X 'github.com/papercomputeco/tapes/pkg/utils.Version=${VERSION}' -X 'github.com/papercomputeco/tapes/pkg/utils.Sha=${COMMIT}' -X 'github.com/papercomputeco/tapes/pkg/utils.Buildtime=${BUILDTIME}'" \
+    -o tapes-extproc ./cli/tapes-extproc
 
 # Use distroless as minimal base image to package the tapes-extproc binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details

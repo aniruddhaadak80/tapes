@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# check=skip=SecretsUsedInArgOrEnv
 
 # -----------------------------------------------------------------------------
 # Build stage
@@ -6,6 +7,11 @@
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILDTIME=dev
+ARG POSTHOG_API_KEY
+ARG POSTHOG_ENDPOINT=https://us.i.posthog.com
 
 WORKDIR /src
 
@@ -16,13 +22,12 @@ RUN go mod download
 # Copy source and build
 COPY . .
 
-ARG LDFLAGS="-s -w"
 RUN CGO_ENABLED=0 \
     GOOS=${TARGETOS:-linux} \
     GOARCH=${TARGETARCH} \
     GOEXPERIMENT="jsonv2" \
     go build \
-    -ldflags="${LDFLAGS} -extldflags '-static'" \
+    -ldflags="-s -w -X 'github.com/papercomputeco/tapes/pkg/utils.Version=${VERSION}' -X 'github.com/papercomputeco/tapes/pkg/utils.Sha=${COMMIT}' -X 'github.com/papercomputeco/tapes/pkg/utils.Buildtime=${BUILDTIME}' -X 'github.com/papercomputeco/tapes/pkg/telemetry.PostHogAPIKey=${POSTHOG_API_KEY}' -X 'github.com/papercomputeco/tapes/pkg/telemetry.PostHogEndpoint=${POSTHOG_ENDPOINT}' -extldflags '-static'" \
     -o /bin/tapes \
     ./cli/tapes
 

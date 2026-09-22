@@ -52,8 +52,8 @@ func main() {
 		slog.Error("Failed to create processor", "error", err)
 		os.Exit(1)
 	}
-	// utils.Version/utils.Sha are stamped by the image build's ldflags
-	// (releaseLDFlags in .dagger/build.go); "dev"/"HEAD" mean an unstamped build.
+	// utils.Version/utils.Sha are stamped by Dockerfile.extproc's ldflags;
+	// "dev"/"HEAD" mean an unstamped build.
 	processor.Metrics().SetBuildInfo(utils.Version, utils.Sha)
 
 	// gRPC server.

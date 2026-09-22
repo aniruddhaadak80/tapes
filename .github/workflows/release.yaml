@@ -21,6 +21,12 @@ jobs:
       - name: Cache Nix store
         uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Record image build time
+        run: echo "IMAGE_BUILDTIME=$(date -u '+%Y-%m-%d %H:%M:%S')" >> "$GITHUB_ENV"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -41,22 +47,29 @@ jobs:
         id: login-ecr-private
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Push tapes image
-        run: |
-          nix develop --command dagger call \
-            build-push-tapes-images \
-              --registry=${{ vars.REGISTRY }} \
-              --tags="${{ github.event.release.tag_name }}" \
-              --tags="latest" \
-              --version="${{ github.event.release.tag_name }}" \
-              --commit="${{ github.sha }}" \
-        env:
-          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+      - name: Build and push tapes image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ vars.REGISTRY }}/tapes:${{ github.event.release.tag_name }}
+            ${{ vars.REGISTRY }}/tapes:latest
+          build-args: |
+            VERSION=${{ github.event.release.tag_name }}
+            COMMIT=${{ github.sha }}
+            BUILDTIME=${{ env.IMAGE_BUILDTIME }}
+          cache-from: type=gha,scope=tapes
+          cache-to: type=gha,mode=max,scope=tapes
+          provenance: false
+          sbom: false
 
       # Without this the data plane has no image to pin: tko's versions.yaml
       # names <EXTPROC_REGISTRY>/tapes-extproc:<tag>, and a release that
       # publishes only the tapes image leaves that tag missing.
-      - name: Push extproc image
+      - name: Validate extproc registry
         run: |
           if [ -z "${{ vars.EXTPROC_REGISTRY }}" ]; then
             echo "EXTPROC_REGISTRY repository variable is not set." >&2
@@ -65,15 +78,25 @@ jobs:
             echo "extproc to REGISTRY, which is ECR Public and hosts tapes." >&2
             exit 1
           fi
-          nix develop --command dagger call \
-            build-push-extproc-images \
-              --registry=${{ vars.EXTPROC_REGISTRY }} \
-              --tags="${{ github.event.release.tag_name }}" \
-              --tags="latest" \
-              --version="${{ github.event.release.tag_name }}" \
-              --commit="${{ github.sha }}"
-        env:
-          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+
+      - name: Build and push extproc image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.extproc
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ vars.EXTPROC_REGISTRY }}/tapes-extproc:${{ github.event.release.tag_name }}
+            ${{ vars.EXTPROC_REGISTRY }}/tapes-extproc:latest
+          build-args: |
+            VERSION=${{ github.event.release.tag_name }}
+            COMMIT=${{ github.sha }}
+            BUILDTIME=${{ env.IMAGE_BUILDTIME }}
+          cache-from: type=gha,scope=tapes-extproc
+          cache-to: type=gha,mode=max,scope=tapes-extproc
+          provenance: false
+          sbom: false
 
       - name: Build upload release artifacts
         run: |
@@ -121,7 +144,7 @@ jobs:
       - name: Upload artifacts to release
         run: |
           mkdir -p dist
-          for file in $(find build -type f); do
+          while IFS= read -r -d '' file; do
             rel_path="${file#build/}"
             os=$(dirname "$rel_path" | cut -d'/' -f1)
             arch=$(dirname "$rel_path" | cut -d'/' -f2)
@@ -135,7 +158,7 @@ jobs:
             fi
 
             cp "$file" "dist/$new_name"
-          done
+          done < <(find build -type f -print0)
 
           # A git tag may legally contain a slash (v1.0/rc1). Interpolated into
           # a filename it reads as a directory that was never created, so the

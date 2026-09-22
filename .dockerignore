@@ -1,0 +1,18 @@
+# Keep image build contexts focused on the Go module and runtime assets.
+.git
+.github
+.dagger
+.direnv
+build
+compose
+docs
+e2e
+skills
+
+Dockerfile*
+docker-compose.yaml
+flake.nix
+flake.lock
+install.sh
+*.md
+**/*_test.go
