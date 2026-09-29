@@ -1345,6 +1345,8 @@ var normalizationCorpus = []struct {
 	{"final sigma folds to sigma", "οδος", "οδοσ"},
 	{"capital sigma folds to sigma", "ΟΔΟΣ", "οδοσ"},
 	{"micro sign folds to greek mu", "µ", "μ"},
+	{"combining ypogegrammeni folds to iota", "ͅ", "ι"},
+	{"prosgegrammeni folds to iota", "ι", "ι"},
 	{"sharp s is preserved (simple fold, not full)", "straße", "straße"},
 	{"capital sharp s folds to sharp s", "STRAẞE", "straße"},
 
