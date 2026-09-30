@@ -1,6 +1,7 @@
 package merkle
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 
@@ -132,9 +133,14 @@ func pruneZeroValues(m map[string]any) map[string]any {
 }
 
 // isZeroValue reports whether v is the zero value for its JSON kind.
-// JSON numbers decode to float64 through encoding/json, but tool input
-// can also reach us via direct map literals, so int / int64 are covered
-// for completeness.
+//
+// Numbers arrive in two shapes and both have to fold to the same answer.
+// A plain decode gives float64, but the Chat Completions reducer decodes tool
+// arguments with decoder.UseNumber() (pkg/capture/openai_chat.go), so the same
+// streamed call reaches the projection as json.Number. Treating only one of
+// them as a number leaves an explicit zero on the capture side while the
+// re-sent history has it pruned, the two projections differ, and the chain
+// forks — which is the whole failure step (4) above exists to prevent.
 func isZeroValue(v any) bool {
 	switch x := v.(type) {
 	case nil:
@@ -151,6 +157,12 @@ func isZeroValue(v any) bool {
 		return x == 0
 	case int64:
 		return x == 0
+	case json.Number:
+		// Parse rather than compare text so "0", "0.0", "-0" and "0e3" all
+		// fold alike. A literal that will not parse is not a number we can
+		// call zero, so it is kept.
+		f, err := x.Float64()
+		return err == nil && f == 0
 	case []any:
 		return len(x) == 0
 	default:
