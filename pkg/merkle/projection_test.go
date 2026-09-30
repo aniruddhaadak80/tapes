@@ -231,6 +231,49 @@ var _ = Describe("ProjectContent", func() {
 		Expect(merkle.ProjectContent(blocks)).To(Equal(blocks))
 	})
 
+	It("keeps a json.Number that only underflows to zero in float64", func() {
+		// 1e-999 is not zero — it is a positive decimal far below float64's
+		// smallest subnormal. strconv.ParseFloat reports it as 0 with NO
+		// error, so a float64 comparison folds it away and a tool call
+		// carrying it hashes the same as one carrying a real 0 or no
+		// argument at all. Because the projected arguments determine the
+		// node hash, that de-duplicates two distinct calls. Deciding
+		// zero-ness in exact decimal keeps it.
+		blocks := []llm.ContentBlock{{
+			Type:      "tool_use",
+			ToolUseID: "toolu_01abc",
+			ToolName:  "search",
+			ToolInput: map[string]any{"epsilon": json.Number("1e-999")},
+		}}
+
+		Expect(merkle.ProjectContent(blocks)).To(Equal(blocks))
+
+		// And it must not collide with the genuine zero it would otherwise
+		// fold onto.
+		zeroed := []llm.ContentBlock{{
+			Type:      "tool_use",
+			ToolUseID: "toolu_01abc",
+			ToolName:  "search",
+			ToolInput: map[string]any{"epsilon": json.Number("0")},
+		}}
+		dropped := []llm.ContentBlock{{
+			Type:      "tool_use",
+			ToolUseID: "toolu_01abc",
+			ToolName:  "search",
+			ToolInput: map[string]any{},
+		}}
+
+		hashOf := func(input map[string]any) string {
+			return merkle.NewNode(merkle.Bucket{
+				Type:    "message",
+				Role:    "assistant",
+				Content: []llm.ContentBlock{{Type: "tool_use", ToolUseID: "call_01abc", ToolName: "search", ToolInput: input}},
+			}, nil).Hash
+		}
+		Expect(hashOf(map[string]any{"epsilon": json.Number("1e-999")})).NotTo(Equal(hashOf(map[string]any{"epsilon": json.Number("0")})))
+		Expect(hashOf(zeroed[0].ToolInput)).To(Equal(hashOf(dropped[0].ToolInput)))
+	})
+
 	It("keeps tool_input values that are not the zero value", func() {
 		blocks := []llm.ContentBlock{{
 			Type:      "tool_use",

@@ -2,6 +2,7 @@ package merkle
 
 import (
 	"encoding/json"
+	"math/big"
 	"regexp"
 	"strings"
 
@@ -158,11 +159,15 @@ func isZeroValue(v any) bool {
 	case int64:
 		return x == 0
 	case json.Number:
-		// Parse rather than compare text so "0", "0.0", "-0" and "0e3" all
-		// fold alike. A literal that will not parse is not a number we can
-		// call zero, so it is kept.
-		f, err := x.Float64()
-		return err == nil && f == 0
+		// Decide zero-ness in exact decimal, NOT in float64. A literal like
+		// "1e-999" is not zero, but strconv.ParseFloat reports it as 0 with
+		// no error, so a float64 comparison folds a real argument away and
+		// the call then hashes identically to one passing a genuine 0.
+		// A Rat parses the decimal text exactly, so it separates "1e-999"
+		// from "0" while still folding "0", "0.0", "-0" and "0e3" alike.
+		// Text that is not a decimal at all is kept rather than guessed at.
+		r, ok := new(big.Rat).SetString(string(x))
+		return ok && r.Sign() == 0
 	case []any:
 		return len(x) == 0
 	default:
